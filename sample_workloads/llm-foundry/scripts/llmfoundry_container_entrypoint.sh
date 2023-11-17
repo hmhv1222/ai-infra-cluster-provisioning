@@ -11,6 +11,7 @@ set -o pipefail
 
 export EXPERIMENT_LOCAL_DIR=/experiment
 export EXPERIMENT_ROOT_DIR=${MODEL_NAME}
+export GPUS_PER_NODE=8
 
 PROFILING_DIR=$EXPERIMENT_LOCAL_DIR/nsys_profiles
 mkdir -p $PROFILING_DIR
@@ -23,6 +24,8 @@ mkdir -p $OUT_DIR
 
 DEBUG_DIR=$EXPERIMENT_LOCAL_DIR/debug
 mkdir -p $DEBUG_DIR
+
+CMD_PREFIX=""
 
 export NCCL_TOPO_DUMP_FILE=$DEBUG_DIR/nccl_topo_${NODE_RANK}.xml
 export NCCL_GRAPH_DUMP_FILE="$DEBUG_DIR/nccl_graph_${NODE_RANK}.graph"
@@ -126,29 +129,41 @@ PIDS=()
 
 CPU_SETS=( "0-7,104-111" "8-15,112-119" "16-23,120-127" "24-31,128-135" "52-59,156-163" "60-67,164-171" "68-75,172-179" "76-83,180-187" )
 
-for ((LOCAL_RANK=0; LOCAL_RANK <= $((GPUS_PER_NODE - 1)); LOCAL_RANK++)); do
-   RANK=$(($GPUS_PER_NODE*$NODE_RANK + $LOCAL_RANK))
+if [[ "${COLLECT_NSYS_PROFILE:="yes"}" == "yes" ]]; then
+  echo "Collecting nsys profile"
+  CMD_PREFIX="${CMD_PREFIX} nsys profile --sample=none --trace=cuda,nvtx -o $PROFILING_DIR/node_${NODE_RANK:?} --capture-range=cudaProfilerApi --capture-range-end=repeat:${PROFILE_REPS:=5} --export sqlite "
+fi
 
-   CPUS=${CPU_SETS[$LOCAL_RANK]}
-   echo "Using CPUs $CPUS for local rank $LOCAL_RANK"
-
-   if (( LOCAL_RANK < 4 )); then
-     MEMBIND_NUMA_NODE=0
-   else
-     MEMBIND_NUMA_NODE=1
-   fi
-   CMD_PREFIX="numactl --membind=$MEMBIND_NUMA_NODE --physcpubind $CPUS"
-
-   RANK=$RANK LOCAL_RANK=$LOCAL_RANK \
-     $CMD_PREFIX \
-     composer train/train.py train/yamls/pretrain/${MODEL_NAME}.yaml \
+$CMD_PREFIX composer train/train.py train/yamls/pretrain/${MODEL_NAME}.yaml \
      data_local=my-copy-c4 train_loader.dataset.split=train_small \
      eval_loader.dataset.split=val_small max_duration=10ba eval_interval=0 \
-     save_folder=${MODEL_NAME} > >(tee "$LOG_DIR/pretrain_gpt_rank$RANK.log") 2>&1 &
-   PID=$!
-   PIDS+=($PID)
+     save_folder=${MODEL_NAME} activation_checkpointing=${ACT_CKPT} n_layers=${N_LAYERS} \
+     max_seq_len=${MAX_SEQ_LEN} device_train_microbatch_size=${DTMS} \
+     fsdp_config.sharding_strategy=${FSDP_SHARDING_STRATEGY} fsdp_config.limit_all_gathers=${FSDP_LIMIT_ALL_GATHERS} \
+     fsdp_config.forward_prefetch=${FSDP_FORWARD_PREFETCH} fsdp_config.backward_prefetch=${FSDP_BACKWARD_PREFETCH} \
+    
 
-   echo "Launched train.py for rank $RANK with PID $PID"
-done
+# for ((LOCAL_RANK=0; LOCAL_RANK <= $((GPUS_PER_NODE - 1)); LOCAL_RANK++)); do
+#    RANK=$(($GPUS_PER_NODE*$NODE_RANK + $LOCAL_RANK))
 
-wait_all_success_or_exit "${PIDS[@]}"
+#    CPUS=${CPU_SETS[$LOCAL_RANK]}
+#    echo "Using CPUs $CPUS for local rank $LOCAL_RANK"
+
+#    if (( LOCAL_RANK < 4 )); then
+#      MEMBIND_NUMA_NODE=0
+#    else
+#      MEMBIND_NUMA_NODE=1
+#    fi
+#    CMD_PREFIX="numactl --membind=$MEMBIND_NUMA_NODE --physcpubind $CPUS"
+
+#    RANK=$RANK LOCAL_RANK=$LOCAL_RANK \
+#      $CMD_PREFIX \
+#      composer train/train.py train/yamls/pretrain/${MODEL_NAME}.yaml \
+#      data_local=my-copy-c4 train_loader.dataset.split=train_small \
+#      eval_loader.dataset.split=val_small max_duration=10ba eval_interval=0 \
+#      save_folder=${MODEL_NAME} > >(tee "$LOG_DIR/pretrain_gpt_rank$RANK.log") 2>&1 &
+#    PID=$!
+#    PIDS+=($PID)
+
+#    echo "Launched train.py for rank $RANK with PID $PID"
+# done
