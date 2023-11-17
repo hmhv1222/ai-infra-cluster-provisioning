@@ -10,10 +10,8 @@ set -o pipefail
 : "${WORLD_SIZE:?Must set WORLD_SIZE}"
 
 export EXPERIMENT_LOCAL_DIR=/experiment
-export EXPERIMENT_ROOT_DIR=${MODEL_NAME}_${NNODES}nodes
+export EXPERIMENT_ROOT_DIR=${MODEL_NAME}
 export GPUS_PER_NODE=8
-
-gsutil rsync -r gs://${GCS_BUCKET}/${EXPERIMENT_ROOT_DIR}/ ${EXPERIMENT_LOCAL_DIR}/
 
 PROFILING_DIR=$EXPERIMENT_LOCAL_DIR/nsys_profiles
 mkdir -p $PROFILING_DIR
@@ -108,8 +106,8 @@ function on_script_completion {
    touch /tmp/workload_terminated
 
    echo "Uploading ${EXPERIMENT_LOCAL_DIR} to gs://${GCS_BUCKET}/${EXPERIMENT_ROOT_DIR}/"
-   # echo "SKIPPING UPLOAD, STORAGE NOT CONFIGURED"
-   gsutil rsync -r ${EXPERIMENT_LOCAL_DIR}/ gs://${GCS_BUCKET}/${EXPERIMENT_ROOT_DIR}/
+   echo "SKIPPING UPLOAD, STORAGE NOT CONFIGURED"
+   # gsutil rsync -r ${EXPERIMENT_LOCAL_DIR}/ gs://${GCS_BUCKET}/${EXPERIMENT_ROOT_DIR}/
 }
 
 
@@ -139,7 +137,11 @@ fi
 $CMD_PREFIX composer train/train.py train/yamls/pretrain/${MODEL_NAME}.yaml \
      data_local=my-copy-c4 train_loader.dataset.split=train_small \
      eval_loader.dataset.split=val_small max_duration=10ba eval_interval=0 \
-     save_folder=${MODEL_NAME}
+     save_folder=${MODEL_NAME} activation_checkpointing=${ACT_CKPT} n_layers=${N_LAYERS} \
+     max_seq_len=${MAX_SEQ_LEN} device_train_microbatch_size=${DTMS} \
+     fsdp_config.sharding_strategy=${FSDP_SHARDING_STRATEGY} fsdp_config.limit_all_gathers=${FSDP_LIMIT_ALL_GATHERS} \
+     fsdp_config.forward_prefetch=${FSDP_FORWARD_PREFETCH} fsdp_config.backward_prefetch=${FSDP_BACKWARD_PREFETCH} \
+    
 
 # for ((LOCAL_RANK=0; LOCAL_RANK <= $((GPUS_PER_NODE - 1)); LOCAL_RANK++)); do
 #    RANK=$(($GPUS_PER_NODE*$NODE_RANK + $LOCAL_RANK))
